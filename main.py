@@ -2,12 +2,8 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 import os
-from dotenv import load_dotenv # [MELHORIA] Adicionado para carregar o .env
+# A linha 'from dotenv import load_dotenv' foi removida
 from keep_alive import keep_alive
-
-# [MELHORIA] Carrega as variáveis de ambiente do arquivo .env
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Configuração Inicial do Bot ---
 intents = discord.Intents.default()
@@ -17,7 +13,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- Lógica de Confirmação de Troca ---
-# (Esta classe estava correta, sem alterações)
 class ConfirmationView(View):
     def __init__(self, user, old_role_name, new_role_name, original_embed, original_message):
         super().__init__(timeout=60)
@@ -42,19 +37,15 @@ class ConfirmationView(View):
         self.original_embed.set_field_at(new_role_index, name=self.new_role_name, value=self.user.mention, inline=False)
 
         await self.original_message.edit(embed=self.original_embed)
-        # Usamos edit_original_response para remover a mensagem de confirmação
         await interaction.response.edit_message(content="Vaga trocada com sucesso!", view=None)
 
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
     async def cancel_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user != self.user:
             return await interaction.response.send_message("Apenas o jogador original pode cancelar.", ephemeral=True)
-        # Usamos edit_original_response para remover a mensagem de confirmação
         await interaction.response.edit_message(content="Troca cancelada.", view=None)
 
-
 # --- Botão de Inscrição ---
-# (Esta classe estava correta, sem alterações)
 class SignupButton(Button):
     def __init__(self, label):
         super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=f"signup_{label}")
@@ -85,14 +76,12 @@ class SignupButton(Button):
                     if "Vazio" in field.value:
                         original_embed.set_field_at(i, name=field.name, value=user.mention, inline=False)
                         await interaction.message.edit(embed=original_embed)
-                        # É bom dar um feedback para o usuário que se inscreveu
                         await interaction.response.send_message(f"Você se inscreveu como **{clicked_role_name}**!", ephemeral=True)
                         return
                     else:
                         return await interaction.response.send_message("Essa vaga já foi preenchida!", ephemeral=True)
 
 # --- View Principal do Evento ---
-# (Esta classe estava quase toda correta, apenas o callback do select foi melhorado)
 class DynamicEventView(View):
     def __init__(self, author_id):
         super().__init__(timeout=None)
@@ -156,7 +145,6 @@ class AddRoleModal(Modal):
         self.author_id = author_id
         self.add_item(TextInput(label="Nome da Vaga", placeholder="Ex: Tank, Healer, DPS Range...", required=True))
 
-    # [CORREÇÃO] O callback de um Modal deve se chamar on_submit
     async def on_submit(self, interaction: discord.Interaction):
         role_name = self.children[0].value.strip()
         embed = self.original_message.embeds[0]
@@ -175,10 +163,8 @@ class AddRoleModal(Modal):
         await interaction.response.send_message(f"Vaga '{role_name}' adicionada!", ephemeral=True)
 
 # --- Comando Principal ---
-# [CORREÇÃO] A sintaxe correta é @bot.tree.command()
 @bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
 async def criar_evento(
-    # [CORREÇÃO] O primeiro parâmetro é 'interaction', não 'ctx'
     interaction: discord.Interaction, 
     titulo: str, 
     horario: str, 
@@ -189,20 +175,16 @@ async def criar_evento(
         description=f"**Horário:** {horario}\n**Descrição:** {descricao}\n\n**Vagas:**",
         color=discord.Color.gold()
     )
-    # [CORREÇÃO] Usar interaction.user em vez de ctx.author
     embed.set_footer(text=f"Evento criado por {interaction.user.display_name}")
     embed.set_thumbnail(url="https://assets.albiononline.com/assets/images/items/T8_CHEST_AVALONIAN_ELITE.png")
 
-    # [CORREÇÃO] Usar interaction.user.id
     view = DynamicEventView(author_id=interaction.user.id)
-    # [CORREÇÃO] Usar interaction.response.send_message
     await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
 
 # --- Evento de Inicialização ---
 @bot.event
 async def on_ready():
     print(f'Bot {bot.user} está online e pronto!')
-    # [CORREÇÃO CRÍTICA] Adicionado o sincronizador de comandos de barra
     try:
         synced = await bot.tree.sync()
         print(f"Sincronizado {len(synced)} comando(s).")
@@ -210,10 +192,11 @@ async def on_ready():
         print(f"Erro ao sincronizar comandos: {e}")
     
 # --- Ligar o Bot ---
-# [MELHORIA] Estrutura padrão para executar o script
 if __name__ == "__main__":
     keep_alive()
-    if TOKEN:
-        bot.run(TOKEN)
+    # Puxa o token diretamente do ambiente do servidor (Render)
+    token = os.getenv("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
     else:
-        print("ERRO: Token do Discord não encontrado. Verifique o arquivo .env ou as variáveis de ambiente.")
+        print("ERRO CRÍTICO: Token do Discord não foi encontrado. Verifique as variáveis de ambiente no Render.")
