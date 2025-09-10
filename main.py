@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord.ui import Button, View, Modal, InputText # <--- CORRIGIDO AQUI
+from discord.ui import Button, View, Modal, TextInput # <--- CORRIGIDO AQUI
 import os
 from keep_alive import keep_alive # Certifique-se que você tem o arquivo keep_alive.py
 
@@ -147,7 +147,7 @@ class AddRoleModal(Modal):
         self.original_message = original_message
         self.author_id = author_id
         # CORRIGIDO AQUI
-        self.add_item(InputText(label="Nome da Vaga", placeholder="Ex: Tank, Healer, DPS Range...", required=True))
+        self.add_item(TextInput(label="Nome da Vaga", placeholder="Ex: Tank, Healer, DPS Range...", required=True))
 
     async def callback(self, interaction: discord.Interaction):
         role_name = self.children[0].value.strip()
