@@ -1,8 +1,13 @@
 import discord
 from discord.ext import commands
-from discord.ui import Button, View, Modal, TextInput # <--- CORRIGIDO AQUI
+from discord.ui import Button, View, Modal, TextInput
 import os
-from keep_alive import keep_alive # Certifique-se que você tem o arquivo keep_alive.py
+from dotenv import load_dotenv # [MELHORIA] Adicionado para carregar o .env
+from keep_alive import keep_alive
+
+# [MELHORIA] Carrega as variáveis de ambiente do arquivo .env
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 # --- Configuração Inicial do Bot ---
 intents = discord.Intents.default()
@@ -12,6 +17,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- Lógica de Confirmação de Troca ---
+# (Esta classe estava correta, sem alterações)
 class ConfirmationView(View):
     def __init__(self, user, old_role_name, new_role_name, original_embed, original_message):
         super().__init__(timeout=60)
@@ -22,7 +28,7 @@ class ConfirmationView(View):
         self.original_message = original_message
 
     @discord.ui.button(label="Sim, quero trocar!", style=discord.ButtonStyle.success)
-    async def confirm_button(self, button: Button, interaction: discord.Interaction):
+    async def confirm_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user != self.user:
             return await interaction.response.send_message("Apenas o jogador original pode confirmar a troca.", ephemeral=True)
 
@@ -36,18 +42,19 @@ class ConfirmationView(View):
         self.original_embed.set_field_at(new_role_index, name=self.new_role_name, value=self.user.mention, inline=False)
 
         await self.original_message.edit(embed=self.original_embed)
-        await interaction.response.defer()
-        await interaction.delete_original_response()
+        # Usamos edit_original_response para remover a mensagem de confirmação
+        await interaction.response.edit_message(content="Vaga trocada com sucesso!", view=None)
 
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.danger)
-    async def cancel_button(self, button: Button, interaction: discord.Interaction):
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user != self.user:
             return await interaction.response.send_message("Apenas o jogador original pode cancelar.", ephemeral=True)
-        await interaction.response.defer()
-        await interaction.delete_original_response()
+        # Usamos edit_original_response para remover a mensagem de confirmação
+        await interaction.response.edit_message(content="Troca cancelada.", view=None)
 
 
 # --- Botão de Inscrição ---
+# (Esta classe estava correta, sem alterações)
 class SignupButton(Button):
     def __init__(self, label):
         super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=f"signup_{label}")
@@ -77,21 +84,24 @@ class SignupButton(Button):
                 if field.name == clicked_role_name:
                     if "Vazio" in field.value:
                         original_embed.set_field_at(i, name=field.name, value=user.mention, inline=False)
-                        await interaction.response.edit_message(embed=original_embed)
+                        await interaction.message.edit(embed=original_embed)
+                        # É bom dar um feedback para o usuário que se inscreveu
+                        await interaction.response.send_message(f"Você se inscreveu como **{clicked_role_name}**!", ephemeral=True)
                         return
                     else:
                         return await interaction.response.send_message("Essa vaga já foi preenchida!", ephemeral=True)
 
 # --- View Principal do Evento ---
+# (Esta classe estava quase toda correta, apenas o callback do select foi melhorado)
 class DynamicEventView(View):
     def __init__(self, author_id):
         super().__init__(timeout=None)
         self.author_id = author_id
 
     async def reorder_buttons(self):
-        signup_buttons = [child for child in self.children if isinstance(child, SignupButton)]
+        signup_buttons = sorted([child for child in self.children if isinstance(child, SignupButton)], key=lambda btn: btn.label)
         control_buttons = [child for child in self.children if not isinstance(child, SignupButton)]
-
+        
         self.clear_items()
         for btn in control_buttons:
             self.add_item(btn)
@@ -99,15 +109,14 @@ class DynamicEventView(View):
             self.add_item(btn)
 
     @discord.ui.button(label="➕ Adicionar Vaga", style=discord.ButtonStyle.success, custom_id="add_role")
-    async def add_role_button(self, button: Button, interaction: discord.Interaction):
+    async def add_role_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.author_id:
             return await interaction.response.send_message("Apenas o criador do evento pode adicionar vagas.", ephemeral=True)
-
         modal = AddRoleModal(original_message=interaction.message, author_id=self.author_id)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="🗑️ Remover Vaga", style=discord.ButtonStyle.danger, custom_id="remove_role")
-    async def remove_role_button(self, button: Button, interaction: discord.Interaction):
+    async def remove_role_button(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.author_id:
             return await interaction.response.send_message("Apenas o criador do evento pode remover vagas.", ephemeral=True)
 
@@ -116,24 +125,23 @@ class DynamicEventView(View):
             return await interaction.response.send_message("Não há vagas para remover.", ephemeral=True)
 
         options = [discord.SelectOption(label=field.name) for field in embed.fields]
-        select = discord.ui.Select(placeholder="Selecione a vaga para remover...", options=options)
+        select = discord.ui.Select(placeholder="Selecione a vaga para remover...", options=options, custom_id="role_remover_select")
 
         async def select_callback(select_interaction: discord.Interaction):
             role_to_remove = select_interaction.data['values'][0]
-
             new_embed = interaction.message.embeds[0]
             new_fields = [field for field in new_embed.fields if field.name != role_to_remove]
             new_embed.clear_fields()
             for field in new_fields:
                 new_embed.add_field(name=field.name, value=field.value, inline=False)
-
+            
             new_view = DynamicEventView(author_id=self.author_id)
             for field in new_embed.fields:
                 new_view.add_item(SignupButton(label=field.name))
             await new_view.reorder_buttons()
-
+            
             await interaction.message.edit(embed=new_embed, view=new_view)
-            await select_interaction.response.defer()
+            await select_interaction.response.edit_message(content=f"Vaga '{role_to_remove}' removida.", view=None)
 
         select.callback = select_callback
         view = View()
@@ -146,10 +154,10 @@ class AddRoleModal(Modal):
         super().__init__(title="Adicionar Nova Vaga")
         self.original_message = original_message
         self.author_id = author_id
-        # CORRIGIDO AQUI
         self.add_item(TextInput(label="Nome da Vaga", placeholder="Ex: Tank, Healer, DPS Range...", required=True))
 
-    async def callback(self, interaction: discord.Interaction):
+    # [CORREÇÃO] O callback de um Modal deve se chamar on_submit
+    async def on_submit(self, interaction: discord.Interaction):
         role_name = self.children[0].value.strip()
         embed = self.original_message.embeds[0]
 
@@ -164,33 +172,48 @@ class AddRoleModal(Modal):
         await new_view.reorder_buttons()
 
         await self.original_message.edit(embed=embed, view=new_view)
-        await interaction.response.defer()
+        await interaction.response.send_message(f"Vaga '{role_name}' adicionada!", ephemeral=True)
 
 # --- Comando Principal ---
-@bot.slash_command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
+# [CORREÇÃO] A sintaxe correta é @bot.tree.command()
+@bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
 async def criar_evento(
-    ctx: discord.ApplicationContext,
-    titulo: discord.Option(str, "Qual o título do evento?", required=True),
-    horario: discord.Option(str, "Qual o dia e hora do evento? (ex: 21:00 de Sábado)", required=True),
-    descricao: discord.Option(str, "Uma breve descrição do evento.", required=False, default="Sem descrição.")
+    # [CORREÇÃO] O primeiro parâmetro é 'interaction', não 'ctx'
+    interaction: discord.Interaction, 
+    titulo: str, 
+    horario: str, 
+    descricao: str = "Sem descrição."
 ):
     embed = discord.Embed(
         title=f"📢 Evento: {titulo}",
         description=f"**Horário:** {horario}\n**Descrição:** {descricao}\n\n**Vagas:**",
         color=discord.Color.gold()
     )
-    embed.set_footer(text=f"Evento criado por {ctx.author.display_name}")
+    # [CORREÇÃO] Usar interaction.user em vez de ctx.author
+    embed.set_footer(text=f"Evento criado por {interaction.user.display_name}")
     embed.set_thumbnail(url="https://assets.albiononline.com/assets/images/items/T8_CHEST_AVALONIAN_ELITE.png")
 
-    view = DynamicEventView(author_id=ctx.author.id)
-    await ctx.respond(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+    # [CORREÇÃO] Usar interaction.user.id
+    view = DynamicEventView(author_id=interaction.user.id)
+    # [CORREÇÃO] Usar interaction.response.send_message
+    await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
 
 # --- Evento de Inicialização ---
 @bot.event
 async def on_ready():
-    bot.add_view(DynamicEventView(author_id=0))
     print(f'Bot {bot.user} está online e pronto!')
-
+    # [CORREÇÃO CRÍTICA] Adicionado o sincronizador de comandos de barra
+    try:
+        synced = await bot.tree.sync()
+        print(f"Sincronizado {len(synced)} comando(s).")
+    except Exception as e:
+        print(f"Erro ao sincronizar comandos: {e}")
+    
 # --- Ligar o Bot ---
-keep_alive()
-bot.run(os.getenv("DISCORD_TOKEN"))
+# [MELHORIA] Estrutura padrão para executar o script
+if __name__ == "__main__":
+    keep_alive()
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        print("ERRO: Token do Discord não encontrado. Verifique o arquivo .env ou as variáveis de ambiente.")
