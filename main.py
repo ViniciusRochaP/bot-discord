@@ -377,4 +377,83 @@ async def listar_templates(interaction: discord.Interaction):
     templates = cur.fetchall()
 
     if not templates:
-        await interaction.response.send_message("Nenhum template foi criado neste servidor ainda. Use `/criar_template
+        await interaction.response.send_message("Nenhum template foi criado neste servidor ainda. Use `/criar_template`.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="📋 Templates de Vagas Disponíveis", color=discord.Color.blue())
+    for name, roles in templates:
+        embed.add_field(name=f"🔹 {name}", value=f"`{roles.replace(',', ', ')}`", inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="deletar_template", description="Deleta um template de vagas.")
+async def deletar_template(interaction: discord.Interaction, nome: str):
+    server_id = interaction.guild.id
+    cur.execute("DELETE FROM templates WHERE template_name = ? AND server_id = ?", (nome.lower(), server_id))
+    
+    if cur.rowcount > 0:
+        con.commit()
+        await interaction.response.send_message(f"🗑️ Template '{nome}' deletado com sucesso.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"⚠️ Template '{nome}' não encontrado.", ephemeral=True)
+        
+# --- Comando Principal ---
+@bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
+async def criar_evento(
+    interaction: discord.Interaction, 
+    titulo: str, 
+    horario: str, 
+    descricao: str = "Sem descrição.",
+    template: str = None
+):
+    embed = discord.Embed(
+        title=f"📢 Evento: {titulo}",
+        description=f"**Horário:** {horario}\n**Descrição:** {descricao}\n\n**Vagas:**",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Evento criado por {interaction.user.display_name}")
+    embed.set_thumbnail(url="https://assets.albiononline.com/assets/images/items/T8_CHEST_AVALONIAN_ELITE.png")
+
+    view = DynamicEventView(author_id=interaction.user.id)
+
+    if template:
+        cur.execute("SELECT roles FROM templates WHERE template_name = ? AND server_id = ?", (template.lower(), interaction.guild.id))
+        result = cur.fetchone()
+        if result:
+            roles = result[0].split(',')
+            for role_name in roles:
+                if role_name: 
+                    embed.add_field(name=role_name, value="Vazio", inline=False)
+                    view.add_item(SignupButton(label=role_name))
+            
+            signup_buttons = sorted([c for c in view.children if isinstance(c, SignupButton)], key=lambda btn: btn.label)
+            control_buttons = [c for c in view.children if not isinstance(c, SignupButton)]
+            view.children = control_buttons + signup_buttons
+    
+    # Responder à interação de forma diferente dependendo se o template foi encontrado
+    if template and not result:
+        await interaction.response.send_message(f"⚠️ Template '{template}' não encontrado. Criando evento sem vagas.", ephemeral=True)
+        await interaction.channel.send(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+    else:
+        await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+
+# --- Evento de Inicialização ---
+@bot.event
+async def on_ready():
+    # Adicionar a view persistente para que os botões funcionem após reiniciar
+    bot.add_view(DynamicEventView(author_id=0)) # author_id é um placeholder, a verificação é feita no botão
+    print(f'Bot {bot.user} está online e pronto!')
+    try:
+        synced = await bot.tree.sync()
+        print(f"Sincronizado {len(synced)} comando(s).")
+    except Exception as e:
+        print(f"Erro ao sincronizar comandos: {e}")
+    
+# --- Ligar o Bot ---
+if __name__ == "__main__":
+    keep_alive()
+    token = os.getenv("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("ERRO CRÍTICO: Token do Discord não foi encontrado.")
