@@ -8,8 +8,8 @@ from datetime import datetime
 import re
 
 # --- Configuração ---
-# Coloque o ID do canal de relatórios aqui. O bot precisa de permissão para ver e enviar mensagens nele.
-CANAL_RELATORIOS_ID = 1415693614989836358 # SUBSTITUA PELO ID CORRETO DO SEU CANAL
+# SUBSTITUA PELO ID CORRETO DO SEU CANAL DE RELATÓRIOS
+CANAL_RELATORIOS_ID = 1415693614989836358 
 
 # --- Setup do Banco de Dados ---
 # Cria um banco de dados local para armazenar os templates.
@@ -33,7 +33,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # =================================================================================
-# SEÇÃO DE CONCLUSÃO DE EVENTO E RELATÓRIO (NOVA FUNCIONALIDADE)
+# SEÇÃO DE CONCLUSÃO DE EVENTO E RELATÓRIO
 # =================================================================================
 
 class ConfirmationReportView(View):
@@ -60,7 +60,6 @@ class ConfirmationReportView(View):
             
             # Atualiza o campo correspondente no embed
             for i, field in enumerate(original_embed.fields):
-                # Usamos uma verificação mais robusta para encontrar o participante
                 if str(participant_id) in field.value:
                     original_embed.set_field_at(
                         i, 
@@ -74,7 +73,7 @@ class ConfirmationReportView(View):
             button.label = "Confirmado"
             button.style = discord.ButtonStyle.success
             await interaction.message.edit(embed=original_embed, view=self)
-            await interaction.response.defer() # Confirma a interação sem enviar nova mensagem
+            await interaction.response.defer()
             
         return callback
 
@@ -90,11 +89,9 @@ class LootReportModal(Modal):
         self.add_item(TextInput(label="Custo Total de Reparo", placeholder="Ex: 150000 ou 150k", required=False, default="0"))
 
     def format_silver(self, amount):
-        """Formata um número para uma string legível de prata (ex: 1.500.000)."""
         return f"{amount:,.0f}".replace(",", ".")
 
     def parse_silver(self, text: str) -> int:
-        """Converte strings como '2.5m' ou '150k' para inteiros."""
         text = text.lower().strip().replace(',', '.')
         if 'm' in text:
             return int(float(text.replace('m', '')) * 1_000_000)
@@ -106,7 +103,7 @@ class LootReportModal(Modal):
         try:
             total_loot = self.parse_silver(self.children[0].value)
             total_repair = self.parse_silver(self.children[1].value)
-        except ValueError:
+        except (ValueError, TypeError):
             await interaction.response.send_message("Por favor, insira apenas números válidos (ex: 500000, 150k, 2.5m).", ephemeral=True)
             return
 
@@ -119,7 +116,6 @@ class LootReportModal(Modal):
         repair_per_person = total_repair // num_participants
         net_per_person = loot_per_person - repair_per_person
 
-        # Envia o relatório para o canal de relatórios
         reports_channel = bot.get_channel(CANAL_RELATORIOS_ID)
         if not reports_channel:
             await interaction.response.send_message(f"ERRO: Canal de relatórios com ID {CANAL_RELATORIOS_ID} não encontrado.", ephemeral=True)
@@ -128,14 +124,14 @@ class LootReportModal(Modal):
         original_event_embed = self.original_message.embeds[0]
         
         report_embed = discord.Embed(
-            title=f"📄 Relatório: {original_event_embed.title}",
+            title=f"📄 Relatório: {original_event_embed.title.replace('📢 Evento: ', '')}",
             description=f"Evento concluído em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}\nCriado por: <@{self.author_id}>",
             color=discord.Color.green()
         )
         report_embed.add_field(name="💰 Loot Total", value=self.format_silver(total_loot), inline=True)
         report_embed.add_field(name="🔧 Reparo Total", value=self.format_silver(total_repair), inline=True)
         report_embed.add_field(name="👥 Participantes", value=str(num_participants), inline=True)
-        report_embed.add_field(name="\u200b", value="--- **Divisão Individual** ---", inline=False) # Linha divisória
+        report_embed.add_field(name="\u200b", value="--- **Divisão Individual** ---", inline=False)
 
         participant_ids = []
         for p_id, p_name in self.participants.items():
@@ -152,34 +148,35 @@ class LootReportModal(Modal):
         report_view = ConfirmationReportView(self.author_id, participant_ids)
         await reports_channel.send(embed=report_embed, view=report_view)
 
-        # Desativa os botões do evento original e edita o título
-        for child in View.from_message(self.original_message).children:
+        view = View.from_message(self.original_message)
+        for child in view.children:
             child.disabled = True
         
-        original_event_embed.title = f"[CONCLUÍDO] {original_event_embed.title}"
+        original_event_embed.title = f"[CONCLUÍDO] {original_event_embed.title.replace('📢 Evento: ', '')}"
         original_event_embed.color = discord.Color.dark_grey()
-        await self.original_message.edit(embed=original_event_embed, view=None)
+        await self.original_message.edit(embed=original_event_embed, view=view)
 
         await interaction.response.send_message("Relatório de loot gerado com sucesso!", ephemeral=True)
 
 
 class CompletionChoiceView(View):
-    """View para o criador decidir o status final do evento."""
     def __init__(self, author_id, original_message):
         super().__init__(timeout=60)
         self.author_id = author_id
         self.original_message = original_message
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.author_id
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Apenas o criador do evento pode usar estes botões.", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="✅ Sucesso (Gerar Relatório)", style=discord.ButtonStyle.success)
     async def success_button(self, interaction: discord.Interaction, button: Button):
         embed = self.original_message.embeds[0]
-        participants = {} # Dicionário para {id: nome}
+        participants = {}
         for field in embed.fields:
             if "Vazio" not in field.value and field.value:
-                # Extrai o ID do usuário da menção (<@ID>)
                 user_id_match = re.search(r'<@(\d+)>', field.value)
                 if user_id_match:
                     user_id = int(user_id_match.group(1))
@@ -196,20 +193,18 @@ class CompletionChoiceView(View):
     @discord.ui.button(label="❌ Cancelado", style=discord.ButtonStyle.danger)
     async def cancel_button(self, interaction: discord.Interaction, button: Button):
         original_embed = self.original_message.embeds[0]
-        original_embed.title = f"[CANCELADO] {original_embed.title}"
+        original_embed.title = f"[CANCELADO] {original_embed.title.replace('📢 Evento: ', '')}"
         original_embed.color = discord.Color.red()
 
-        # Desativa os botões do evento original
         view = View.from_message(self.original_message)
         for child in view.children:
             child.disabled = True
         
         await self.original_message.edit(embed=original_embed, view=view)
-        await interaction.response.send_message("Evento marcado como cancelado.", ephemeral=True)
-
+        await interaction.response.edit_message(content="Evento marcado como cancelado.", view=None)
 
 # =================================================================================
-# SEÇÃO DE COMANDOS E VIEWS DO EVENTO (MODIFICADO)
+# SEÇÃO DE COMANDOS E VIEWS DO EVENTO
 # =================================================================================
 
 class ConfirmationView(View):
@@ -226,11 +221,8 @@ class ConfirmationView(View):
         if interaction.user != self.user:
             return await interaction.response.send_message("Apenas o jogador original pode confirmar a troca.", ephemeral=True)
 
-        old_role_index = -1
-        new_role_index = -1
-        for i, field in enumerate(self.original_embed.fields):
-            if field.name == self.old_role_name: old_role_index = i
-            if field.name == self.new_role_name: new_role_index = i
+        old_role_index = next((i for i, f in enumerate(self.original_embed.fields) if f.name == self.old_role_name), -1)
+        new_role_index = next((i for i, f in enumerate(self.original_embed.fields) if f.name == self.new_role_name), -1)
 
         self.original_embed.set_field_at(old_role_index, name=self.old_role_name, value="Vazio", inline=False)
         self.original_embed.set_field_at(new_role_index, name=self.new_role_name, value=self.user.mention, inline=False)
@@ -253,21 +245,18 @@ class SignupButton(Button):
         user = interaction.user
         clicked_role_name = self.label
 
-        def get_user_current_role_field(user_mention, embed):
-            return next((field for field in embed.fields if user_mention in field.value), None)
-
-        current_role_field = get_user_current_role_field(user.mention, original_embed)
+        current_role_field = next((field for field in original_embed.fields if user.mention in field.value), None)
 
         if current_role_field:
             if current_role_field.name == clicked_role_name:
                 return await interaction.response.send_message("Você já está inscrito nesta vaga.", ephemeral=True)
-            else:
-                new_role_field = next((f for f in original_embed.fields if f.name == clicked_role_name), None)
-                if "Vazio" not in new_role_field.value:
-                    return await interaction.response.send_message(f"A vaga de **{clicked_role_name}** já foi preenchida.", ephemeral=True)
+            
+            new_role_field = next((f for f in original_embed.fields if f.name == clicked_role_name), None)
+            if "Vazio" not in new_role_field.value:
+                return await interaction.response.send_message(f"A vaga de **{clicked_role_name}** já foi preenchida.", ephemeral=True)
 
-                view = ConfirmationView(user, current_role_field.name, clicked_role_name, original_embed, interaction.message)
-                await interaction.response.send_message(f"Deseja trocar da vaga **{current_role_field.name}** para **{clicked_role_name}**?", view=view, ephemeral=True)
+            view = ConfirmationView(user, current_role_field.name, clicked_role_name, original_embed, interaction.message)
+            await interaction.response.send_message(f"Deseja trocar da vaga **{current_role_field.name}** para **{clicked_role_name}**?", view=view, ephemeral=True)
         else:
             for i, field in enumerate(original_embed.fields):
                 if field.name == clicked_role_name:
@@ -276,23 +265,12 @@ class SignupButton(Button):
                         await interaction.message.edit(embed=original_embed)
                         await interaction.response.send_message(f"Você se inscreveu como **{clicked_role_name}**!", ephemeral=True)
                         return
-                    else:
-                        return await interaction.response.send_message("Essa vaga já foi preenchida!", ephemeral=True)
+            return await interaction.response.send_message("Essa vaga já foi preenchida!", ephemeral=True)
 
 class DynamicEventView(View):
     def __init__(self, author_id):
         super().__init__(timeout=None)
         self.author_id = author_id
-
-    async def reorder_buttons(self):
-        signup_buttons = sorted([child for child in self.children if isinstance(child, SignupButton)], key=lambda btn: btn.label)
-        control_buttons = [child for child in self.children if not isinstance(child, SignupButton)]
-        
-        self.clear_items()
-        for btn in control_buttons:
-            self.add_item(btn)
-        for btn in signup_buttons:
-            self.add_item(btn)
 
     @discord.ui.button(label="➕ Adicionar Vaga", style=discord.ButtonStyle.success, custom_id="add_role")
     async def add_role_button(self, interaction: discord.Interaction, button: Button):
@@ -316,17 +294,16 @@ class DynamicEventView(View):
         async def select_callback(select_interaction: discord.Interaction):
             role_to_remove = select_interaction.data['values'][0]
             new_embed = interaction.message.embeds[0]
+            
             new_fields = [field for field in new_embed.fields if field.name != role_to_remove]
             new_embed.clear_fields()
             for field in new_fields:
                 new_embed.add_field(name=field.name, value=field.value, inline=False)
             
             view = View.from_message(interaction.message)
-            # Remove o botão correspondente à vaga
-            for child in view.children:
-                if isinstance(child, SignupButton) and child.label == role_to_remove:
-                    view.remove_item(child)
-                    break
+            child_to_remove = next((c for c in view.children if isinstance(c, SignupButton) and c.label == role_to_remove), None)
+            if child_to_remove:
+                view.remove_item(child_to_remove)
             
             await interaction.message.edit(embed=new_embed, view=view)
             await select_interaction.response.edit_message(content=f"Vaga '{role_to_remove}' removida.", view=None)
@@ -344,7 +321,6 @@ class DynamicEventView(View):
         view = CompletionChoiceView(self.author_id, interaction.message)
         await interaction.response.send_message("Como você deseja concluir este evento?", view=view, ephemeral=True)
 
-
 class AddRoleModal(Modal):
     def __init__(self, original_message, author_id):
         super().__init__(title="Adicionar Nova Vaga")
@@ -361,33 +337,26 @@ class AddRoleModal(Modal):
 
         embed.add_field(name=role_name, value="Vazio", inline=False)
         
-        # Pega a view existente e adiciona o novo botão
         view = View.from_message(self.original_message)
         view.add_item(SignupButton(label=role_name))
         
-        # Lógica para reordenar (opcional, mas bom para UI)
-        signup_buttons = sorted([child for child in view.children if isinstance(child, SignupButton)], key=lambda btn: btn.label)
+        signup_buttons = [child for child in view.children if isinstance(child, SignupButton)]
         control_buttons = [child for child in view.children if not isinstance(child, SignupButton)]
-        view.clear_items()
-        for btn in control_buttons: view.add_item(btn)
-        for btn in signup_buttons: view.add_item(btn)
         
+        signup_buttons.sort(key=lambda btn: btn.label)
+        
+        view.children = control_buttons + signup_buttons
+
         await self.original_message.edit(embed=embed, view=view)
         await interaction.response.send_message(f"Vaga '{role_name}' adicionada!", ephemeral=True)
 
 # =================================================================================
-# SEÇÃO DE COMANDOS DE TEMPLATE (NOVA FUNCIONALIDADE)
+# SEÇÃO DE COMANDOS DE TEMPLATE
 # =================================================================================
 
 @bot.tree.command(name="criar_template", description="Cria um novo template de vagas para eventos.")
 async def criar_template(interaction: discord.Interaction, nome: str, vagas: str):
-    """
-    Cria um template de vagas.
-    nome: O nome do template (sem espaços).
-    vagas: Uma lista de nomes de vagas separadas por vírgula. Ex: Tank,Healer,DPS,Suporte
-    """
     server_id = interaction.guild.id
-    # Remove espaços extras e divide as vagas
     role_list = [role.strip() for role in vagas.split(',')]
     roles_text = ",".join(role_list)
 
@@ -425,7 +394,7 @@ async def deletar_template(interaction: discord.Interaction, nome: str):
     else:
         await interaction.response.send_message(f"⚠️ Template '{nome}' não encontrado.", ephemeral=True)
         
-# --- Comando Principal (Modificado para usar Templates) ---
+# --- Comando Principal ---
 @bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
 async def criar_evento(
     interaction: discord.Interaction, 
@@ -444,22 +413,26 @@ async def criar_evento(
 
     view = DynamicEventView(author_id=interaction.user.id)
 
-    # Se um template for fornecido, preenche as vagas
     if template:
         cur.execute("SELECT roles FROM templates WHERE template_name = ? AND server_id = ?", (template.lower(), interaction.guild.id))
         result = cur.fetchone()
         if result:
             roles = result[0].split(',')
             for role_name in roles:
-                embed.add_field(name=role_name, value="Vazio", inline=False)
-                view.add_item(SignupButton(label=role_name))
-        else:
-            await interaction.response.send_message(f"Template '{template}' não encontrado. Criando evento sem vagas pré-definidas.", ephemeral=True)
-            # A mensagem do evento será enviada abaixo
-    
-    await view.reorder_buttons()
-    await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+                if role_name: # Garante que não adicione vagas vazias
+                    embed.add_field(name=role_name, value="Vazio", inline=False)
+                    view.add_item(SignupButton(label=role_name))
+            
+            signup_buttons = sorted([c for c in view.children if isinstance(c, SignupButton)], key=lambda btn: btn.label)
+            control_buttons = [c for c in view.children if not isinstance(c, SignupButton)]
+            view.children = control_buttons + signup_buttons
 
+            await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+        else:
+            await interaction.response.send_message(f"⚠️ Template '{template}' não encontrado. Criando evento sem vagas.", ephemeral=True, delete_after=10)
+            await interaction.channel.send(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+    else:
+        await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
 
 # --- Evento de Inicialização ---
 @bot.event
