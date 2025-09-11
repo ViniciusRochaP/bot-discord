@@ -12,10 +12,8 @@ import re
 CANAL_RELATORIOS_ID = 1415693614989836358 
 
 # --- Setup do Banco de Dados ---
-# Cria um banco de dados local para armazenar os templates.
 con = sqlite3.connect("bot_database.db")
 cur = con.cursor()
-# Cria a tabela de templates se ela não existir
 cur.execute("""
     CREATE TABLE IF NOT EXISTS templates (
         template_name TEXT PRIMARY KEY,
@@ -43,7 +41,6 @@ class ConfirmationReportView(View):
         self.author_id = author_id
         self.participants = participants
         
-        # Adiciona um botão para cada participante
         for i, p_id in enumerate(self.participants):
             button = Button(label=f"Confirmar Pagamento", style=discord.ButtonStyle.secondary, custom_id=f"confirm_{p_id}_{i}")
             button.callback = self.create_callback(p_id, i)
@@ -58,7 +55,6 @@ class ConfirmationReportView(View):
             button = self.children[button_index]
             original_embed = interaction.message.embeds[0]
             
-            # Atualiza o campo correspondente no embed
             for i, field in enumerate(original_embed.fields):
                 if str(participant_id) in field.value:
                     original_embed.set_field_at(
@@ -97,19 +93,21 @@ class LootReportModal(Modal):
             return int(float(text.replace('m', '')) * 1_000_000)
         if 'k' in text:
             return int(float(text.replace('k', '')) * 1_000)
+        # Permite números com pontos, como "1.500.000"
         return int(re.sub(r'[^0-9]', '', text))
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         try:
             total_loot = self.parse_silver(self.children[0].value)
             total_repair = self.parse_silver(self.children[1].value)
         except (ValueError, TypeError):
-            await interaction.response.send_message("Por favor, insira apenas números válidos (ex: 500000, 150k, 2.5m).", ephemeral=True)
+            await interaction.followup.send("Por favor, insira apenas números válidos (ex: 500000, 150k, 2.5m).")
             return
 
         num_participants = len(self.participants)
         if num_participants == 0:
-            await interaction.response.send_message("Não há participantes para dividir o loot.", ephemeral=True)
+            await interaction.followup.send("Não há participantes para dividir o loot.")
             return
 
         loot_per_person = total_loot // num_participants
@@ -118,13 +116,13 @@ class LootReportModal(Modal):
 
         reports_channel = bot.get_channel(CANAL_RELATORIOS_ID)
         if not reports_channel:
-            await interaction.response.send_message(f"ERRO: Canal de relatórios com ID {CANAL_RELATORIOS_ID} não encontrado.", ephemeral=True)
+            await interaction.followup.send(f"ERRO: Canal de relatórios com ID {CANAL_RELATORIOS_ID} não encontrado.")
             return
             
         original_event_embed = self.original_message.embeds[0]
         
         report_embed = discord.Embed(
-            title=f"📄 Relatório: {original_event_embed.title.replace('📢 Evento: ', '')}",
+            title=f"📄 Relatório: {original_event_embed.title.replace('[CONCLUÍDO] ', '').replace('📢 Evento: ', '')}",
             description=f"Evento concluído em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}\nCriado por: <@{self.author_id}>",
             color=discord.Color.green()
         )
@@ -156,12 +154,12 @@ class LootReportModal(Modal):
         original_event_embed.color = discord.Color.dark_grey()
         await self.original_message.edit(embed=original_event_embed, view=view)
 
-        await interaction.response.send_message("Relatório de loot gerado com sucesso!", ephemeral=True)
+        await interaction.followup.send("Relatório de loot gerado com sucesso!")
 
 
 class CompletionChoiceView(View):
     def __init__(self, author_id, original_message):
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.author_id = author_id
         self.original_message = original_message
 
@@ -177,7 +175,7 @@ class CompletionChoiceView(View):
         participants = {}
         for field in embed.fields:
             if "Vazio" not in field.value and field.value:
-                user_id_match = re.search(r'<@(\d+)>', field.value)
+                user_id_match = re.search(r'<@!?(\d+)>', field.value)
                 if user_id_match:
                     user_id = int(user_id_match.group(1))
                     user = interaction.guild.get_member(user_id)
@@ -285,10 +283,12 @@ class DynamicEventView(View):
             return await interaction.response.send_message("Apenas o criador do evento pode remover vagas.", ephemeral=True)
 
         embed = interaction.message.embeds[0]
-        if not embed.fields:
+        # Pega apenas os nomes das vagas (fields)
+        role_fields = [field for field in embed.fields if field.name not in ["\u200b"]]
+        if not role_fields:
             return await interaction.response.send_message("Não há vagas para remover.", ephemeral=True)
 
-        options = [discord.SelectOption(label=field.name) for field in embed.fields]
+        options = [discord.SelectOption(label=field.name) for field in role_fields]
         select = discord.ui.Select(placeholder="Selecione a vaga para remover...", options=options, custom_id="role_remover_select")
 
         async def select_callback(select_interaction: discord.Interaction):
@@ -298,7 +298,7 @@ class DynamicEventView(View):
             new_fields = [field for field in new_embed.fields if field.name != role_to_remove]
             new_embed.clear_fields()
             for field in new_fields:
-                new_embed.add_field(name=field.name, value=field.value, inline=False)
+                new_embed.add_field(name=field.name, value=field.value, inline=field.inline)
             
             view = View.from_message(interaction.message)
             child_to_remove = next((c for c in view.children if isinstance(c, SignupButton) and c.label == role_to_remove), None)
@@ -329,11 +329,13 @@ class AddRoleModal(Modal):
         self.add_item(TextInput(label="Nome da Vaga", placeholder="Ex: Tank, Healer, DPS Range...", required=True))
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
         role_name = self.children[0].value.strip()
         embed = self.original_message.embeds[0]
 
         if any(field.name.lower() == role_name.lower() for field in embed.fields):
-            return await interaction.response.send_message(f"A vaga '{role_name}' já existe.", ephemeral=True)
+            return await interaction.followup.send(f"A vaga '{role_name}' já existe.")
 
         embed.add_field(name=role_name, value="Vazio", inline=False)
         
@@ -348,7 +350,7 @@ class AddRoleModal(Modal):
         view.children = control_buttons + signup_buttons
 
         await self.original_message.edit(embed=embed, view=view)
-        await interaction.response.send_message(f"Vaga '{role_name}' adicionada!", ephemeral=True)
+        await interaction.followup.send(f"Vaga '{role_name}' adicionada!")
 
 # =================================================================================
 # SEÇÃO DE COMANDOS DE TEMPLATE
@@ -357,15 +359,16 @@ class AddRoleModal(Modal):
 @bot.tree.command(name="criar_template", description="Cria um novo template de vagas para eventos.")
 async def criar_template(interaction: discord.Interaction, nome: str, vagas: str):
     server_id = interaction.guild.id
-    role_list = [role.strip() for role in vagas.split(',')]
+    role_list = [role.strip() for role in vagas.split(',') if role.strip()]
     roles_text = ",".join(role_list)
 
     try:
-        cur.execute("INSERT INTO templates (template_name, roles, server_id) VALUES (?, ?, ?)", (nome.lower(), roles_text, server_id))
+        cur.execute("INSERT OR REPLACE INTO templates (template_name, roles, server_id) VALUES (?, ?, ?)", (nome.lower(), roles_text, server_id))
         con.commit()
-        await interaction.response.send_message(f"✅ Template '{nome}' criado com sucesso com as vagas: {', '.join(role_list)}", ephemeral=True)
-    except sqlite3.IntegrityError:
-        await interaction.response.send_message(f"⚠️ Um template com o nome '{nome}' já existe. Tente outro nome.", ephemeral=True)
+        await interaction.response.send_message(f"✅ Template '{nome}' salvo com sucesso com as vagas: {', '.join(role_list)}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ Ocorreu um erro ao salvar o template: {e}", ephemeral=True)
+
 
 @bot.tree.command(name="listar_templates", description="Lista todos os templates de vagas salvos neste servidor.")
 async def listar_templates(interaction: discord.Interaction):
@@ -374,81 +377,4 @@ async def listar_templates(interaction: discord.Interaction):
     templates = cur.fetchall()
 
     if not templates:
-        await interaction.response.send_message("Nenhum template foi criado neste servidor ainda. Use `/criar_template`.", ephemeral=True)
-        return
-
-    embed = discord.Embed(title="📋 Templates de Vagas Disponíveis", color=discord.Color.blue())
-    for name, roles in templates:
-        embed.add_field(name=f"🔹 {name}", value=f"`{roles.replace(',', ', ')}`", inline=False)
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="deletar_template", description="Deleta um template de vagas.")
-async def deletar_template(interaction: discord.Interaction, nome: str):
-    server_id = interaction.guild.id
-    cur.execute("DELETE FROM templates WHERE template_name = ? AND server_id = ?", (nome.lower(), server_id))
-    
-    if cur.rowcount > 0:
-        con.commit()
-        await interaction.response.send_message(f"🗑️ Template '{nome}' deletado com sucesso.", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"⚠️ Template '{nome}' não encontrado.", ephemeral=True)
-        
-# --- Comando Principal ---
-@bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
-async def criar_evento(
-    interaction: discord.Interaction, 
-    titulo: str, 
-    horario: str, 
-    descricao: str = "Sem descrição.",
-    template: str = None
-):
-    embed = discord.Embed(
-        title=f"📢 Evento: {titulo}",
-        description=f"**Horário:** {horario}\n**Descrição:** {descricao}\n\n**Vagas:**",
-        color=discord.Color.gold()
-    )
-    embed.set_footer(text=f"Evento criado por {interaction.user.display_name}")
-    embed.set_thumbnail(url="https://assets.albiononline.com/assets/images/items/T8_CHEST_AVALONIAN_ELITE.png")
-
-    view = DynamicEventView(author_id=interaction.user.id)
-
-    if template:
-        cur.execute("SELECT roles FROM templates WHERE template_name = ? AND server_id = ?", (template.lower(), interaction.guild.id))
-        result = cur.fetchone()
-        if result:
-            roles = result[0].split(',')
-            for role_name in roles:
-                if role_name: # Garante que não adicione vagas vazias
-                    embed.add_field(name=role_name, value="Vazio", inline=False)
-                    view.add_item(SignupButton(label=role_name))
-            
-            signup_buttons = sorted([c for c in view.children if isinstance(c, SignupButton)], key=lambda btn: btn.label)
-            control_buttons = [c for c in view.children if not isinstance(c, SignupButton)]
-            view.children = control_buttons + signup_buttons
-
-            await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
-        else:
-            await interaction.response.send_message(f"⚠️ Template '{template}' não encontrado. Criando evento sem vagas.", ephemeral=True, delete_after=10)
-            await interaction.channel.send(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
-    else:
-        await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
-
-# --- Evento de Inicialização ---
-@bot.event
-async def on_ready():
-    print(f'Bot {bot.user} está online e pronto!')
-    try:
-        synced = await bot.tree.sync()
-        print(f"Sincronizado {len(synced)} comando(s).")
-    except Exception as e:
-        print(f"Erro ao sincronizar comandos: {e}")
-    
-# --- Ligar o Bot ---
-if __name__ == "__main__":
-    keep_alive()
-    token = os.getenv("DISCORD_TOKEN")
-    if token:
-        bot.run(token)
-    else:
-        print("ERRO CRÍTICO: Token do Discord não foi encontrado.")
+        await interaction.response.send_message("Nenhum template foi criado neste servidor ainda. Use `/criar_template
