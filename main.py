@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 import os
-# A linha 'from dotenv import load_dotenv' foi removida
+import json
 from keep_alive import keep_alive
 
 # --- Configuração Inicial do Bot ---
@@ -11,6 +11,19 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- Carregar/Salvar Templates ---
+def load_templates():
+    if os.path.exists("templates.json"):
+        with open("templates.json", "r") as f:
+            return json.load(f)
+    return {}
+
+def save_templates(templates):
+    with open("templates.json", "w") as f:
+        json.dump(templates, f, indent=4)
+
+templates = load_templates()
 
 # --- Lógica de Confirmação de Troca ---
 class ConfirmationView(View):
@@ -125,8 +138,13 @@ class DynamicEventView(View):
                 new_embed.add_field(name=field.name, value=field.value, inline=False)
             
             new_view = DynamicEventView(author_id=self.author_id)
-            for field in new_embed.fields:
-                new_view.add_item(SignupButton(label=field.name))
+            for child in self.children:
+                if isinstance(child, SignupButton) and child.label != role_to_remove:
+                    new_view.add_item(SignupButton(label=child.label))
+
+            for control_button in [c for c in self.children if not isinstance(c, SignupButton)]:
+                new_view.add_item(control_button)
+
             await new_view.reorder_buttons()
             
             await interaction.message.edit(embed=new_embed, view=new_view)
@@ -136,6 +154,14 @@ class DynamicEventView(View):
         view = View()
         view.add_item(select)
         await interaction.response.send_message("Qual vaga você deseja remover?", view=view, ephemeral=True)
+
+    @discord.ui.button(label="✅ Concluir Evento", style=discord.ButtonStyle.primary, custom_id="conclude_event")
+    async def conclude_event_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.author_id:
+            return await interaction.response.send_message("Apenas o criador do evento pode concluir o evento.", ephemeral=True)
+        
+        view = ConcludeView(self.author_id, interaction.message)
+        await interaction.response.send_message("O evento foi cancelado?", view=view, ephemeral=True)
 
 # --- Modal para Adicionar Vaga ---
 class AddRoleModal(Modal):
@@ -154,21 +180,126 @@ class AddRoleModal(Modal):
 
         embed.add_field(name=role_name, value="Vazio", inline=False)
 
+        # Re-creating the view to add the new button
+        current_view = View.from_message(self.original_message)
         new_view = DynamicEventView(author_id=self.author_id)
+        
+        # Add existing buttons
+        for child in current_view.children:
+            if not isinstance(child, SignupButton):
+                new_view.add_item(child)
+
         for field in embed.fields:
             new_view.add_item(SignupButton(label=field.name))
+
         await new_view.reorder_buttons()
 
         await self.original_message.edit(embed=embed, view=new_view)
         await interaction.response.send_message(f"Vaga '{role_name}' adicionada!", ephemeral=True)
 
-# --- Comando Principal ---
+# --- Views e Modals para Concluir Evento ---
+class ConcludeView(View):
+    def __init__(self, author_id, original_message):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.original_message = original_message
+
+    @discord.ui.button(label="Sim", style=discord.ButtonStyle.danger)
+    async def yes_button(self, interaction: discord.Interaction, button: Button):
+        await self.original_message.edit(content="Evento cancelado.", view=None)
+        await interaction.response.edit_message(content="Evento marcado como cancelado.", view=None)
+
+    @discord.ui.button(label="Não", style=discord.ButtonStyle.success)
+    async def no_button(self, interaction: discord.Interaction, button: Button):
+        modal = LootRepairModal(self.author_id, self.original_message)
+        await interaction.response.send_modal(modal)
+
+class LootRepairModal(Modal):
+    def __init__(self, author_id, original_message):
+        super().__init__(title="Detalhes do Evento")
+        self.author_id = author_id
+        self.original_message = original_message
+        self.add_item(TextInput(label="Loot Total", placeholder="Apenas números", required=True))
+        self.add_item(TextInput(label="Reparo Total", placeholder="Apenas números", required=True))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            total_loot = int(self.children[0].value)
+            total_repair = int(self.children[1].value)
+        except ValueError:
+            return await interaction.response.send_message("Por favor, insira apenas números para o loot e reparo.", ephemeral=True)
+
+        embed = self.original_message.embeds[0]
+        participants = [field for field in embed.fields if "Vazio" not in field.value]
+        
+        if not participants:
+            return await interaction.response.send_message("Não há participantes no evento para dividir o loot.", ephemeral=True)
+
+        net_loot = total_loot - total_repair
+        payout_per_person = net_loot // len(participants)
+
+        report_channel = bot.get_channel(1415693614989836358)
+        
+        report_embed = discord.Embed(
+            title=f"Relatório do Evento: {embed.title}",
+            description=f"**Loot Total:** {total_loot:,}\n**Reparo Total:** {total_repair:,}\n**Loot Líquido:** {net_loot:,}\n**Pagamento por Pessoa:** {payout_per_person:,}",
+            color=discord.Color.green()
+        )
+        
+        participants_mentions = []
+        for field in participants:
+            # Assuming the value is a user mention
+            participants_mentions.append(field.value)
+
+        view = PaymentView(self.author_id, participants_mentions, report_embed)
+
+        await report_channel.send(embed=report_embed, view=view)
+        await interaction.response.send_message("Relatório do evento enviado!", ephemeral=True)
+        await self.original_message.edit(content="Evento concluído.", view=None)
+
+
+class PaymentView(View):
+    def __init__(self, author_id, participants, embed):
+        super().__init__(timeout=None)
+        self.author_id = author_id
+        self.participants = participants
+        self.embed = embed
+        self.paid_status = {p: False for p in participants}
+
+        for participant in self.participants:
+            self.add_item(PaymentButton(participant, self.paid_status))
+        self.update_embed()
+
+    def update_embed(self):
+        self.embed.clear_fields()
+        for participant in self.participants:
+            status = "Pago" if self.paid_status[participant] else "Não Pago"
+            self.embed.add_field(name=participant, value=status, inline=False)
+
+class PaymentButton(Button):
+    def __init__(self, participant, paid_status):
+        super().__init__(label=f"Confirmar Pagamento {participant}", style=discord.ButtonStyle.secondary, custom_id=f"pay_{participant}")
+        self.participant = participant
+        self.paid_status = paid_status
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.author_id:
+            return await interaction.response.send_message("Apenas o criador do evento pode confirmar o pagamento.", ephemeral=True)
+
+        self.paid_status[self.participant] = not self.paid_status[self.participant] # Toggle status
+        self.style = discord.ButtonStyle.success if self.paid_status[self.participant] else discord.ButtonStyle.secondary
+        self.view.update_embed()
+        await interaction.message.edit(embed=self.view.embed, view=self.view)
+        await interaction.response.defer()
+
+# --- Comandos ---
 @bot.tree.command(name="criar_evento", description="Cria um novo evento para PTs de Albion.")
 async def criar_evento(
     interaction: discord.Interaction, 
     titulo: str, 
     horario: str, 
-    descricao: str = "Sem descrição."
+    descricao: str = "Sem descrição.",
+    template: str = None
 ):
     embed = discord.Embed(
         title=f"📢 Evento: {titulo}",
@@ -179,7 +310,41 @@ async def criar_evento(
     embed.set_thumbnail(url="https://assets.albiononline.com/assets/images/items/T8_CHEST_AVALONIAN_ELITE.png")
 
     view = DynamicEventView(author_id=interaction.user.id)
+
+    if template and template in templates:
+        for role in templates[template]:
+            embed.add_field(name=role, value="Vazio", inline=False)
+            view.add_item(SignupButton(label=role))
+
+    await view.reorder_buttons()
     await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
+
+@bot.tree.command(name="criar_template", description="Cria um novo template de vagas.")
+async def criar_template(interaction: discord.Interaction, nome: str, vagas: str):
+    vagas_list = [v.strip() for v in vagas.split(',')]
+    templates[nome] = vagas_list
+    save_templates(templates)
+    await interaction.response.send_message(f"Template '{nome}' criado com as vagas: {', '.join(vagas_list)}", ephemeral=True)
+
+@bot.tree.command(name="listar_templates", description="Lista todos os templates salvos.")
+async def listar_templates(interaction: discord.Interaction):
+    if not templates:
+        return await interaction.response.send_message("Nenhum template salvo.", ephemeral=True)
+
+    embed = discord.Embed(title="Templates Salvos", color=discord.Color.blue())
+    for name, roles in templates.items():
+        embed.add_field(name=name, value=", ".join(roles), inline=False)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="excluir_template", description="Exclui um template salvo.")
+async def excluir_template(interaction: discord.Interaction, nome: str):
+    if nome in templates:
+        del templates[nome]
+        save_templates(templates)
+        await interaction.response.send_message(f"Template '{nome}' excluído com sucesso.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Template '{nome}' não encontrado.", ephemeral=True)
 
 # --- Evento de Inicialização ---
 @bot.event
