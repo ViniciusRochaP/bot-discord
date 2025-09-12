@@ -373,7 +373,7 @@ async def criar_template(interaction: discord.Interaction, nome: str, vagas: str
         
     templates[nome] = vagas_list
     save_templates(templates)
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.send_message(f"Template '{nome}' criado com sucesso.", ephemeral=True)
 
 
 @bot.tree.command(name="listar_templates", description="Lista todos os templates salvos.")
@@ -394,7 +394,7 @@ async def excluir_template(interaction: discord.Interaction, nome: str):
     if nome in templates:
         del templates[nome]
         save_templates(templates)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.send_message(f"Template '{nome}' excluído com sucesso.", ephemeral=True)
     else:
         await interaction.response.send_message(f"Template '{nome}' não encontrado.", ephemeral=True)
 
