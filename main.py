@@ -364,6 +364,14 @@ async def criar_evento(
 
     await interaction.response.send_message(f"@everyone, novo evento '{titulo}' criado!", embed=embed, view=view)
 
+    message = await interaction.original_response()
+
+    thread_name = f"💬 Discussão do Evento: {titulo}"
+    new_thread = await message.create_thread(name=thread_name)
+    
+    await new_thread.send(f"Este é o espaço para discutir e organizar os detalhes do evento **{titulo}**! Usem este chat para combinar estratégias, tirar dúvidas, etc.")
+
+
 @bot.tree.command(name="criar_template", description="Cria um novo template de vagas.")
 async def criar_template(interaction: discord.Interaction, nome: str, vagas: str):
     nome = nome.strip().lower()
