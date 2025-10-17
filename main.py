@@ -409,8 +409,6 @@ async def excluir_template(interaction: discord.Interaction, nome: str):
 # --- Evento de Inicialização ---
 @bot.event
 async def on_ready():
-    bot.add_view(DynamicEventView(author_id=0)) 
-    
     print(f'Bot {bot.user} está online e pronto!')
     try:
         synced = await bot.tree.sync()
