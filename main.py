@@ -7,17 +7,25 @@ import logging
 import traceback
 import sys
 import pymongo
+import certifi # <-- IMPORTAÇÃO PARA CORRIGIR O PROBLEMA DE CONEXÃO SSL
 
 # --- Configuração do Banco de Dados MongoDB ---
 try:
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
         print("ERRO CRÍTICO: MONGO_URI não encontrada nas variáveis de ambiente.", file=sys.stderr)
-        sys.exit(1) # Impede o bot de iniciar se não houver conexão
+        sys.exit(1)
         
-    client = pymongo.MongoClient(mongo_uri)
-    db = client.get_database("discord_bot_db") # Pode ser qualquer nome
+    # CORREÇÃO: Adiciona o tlsCAFile para resolver o erro de SSL handshake
+    client = pymongo.MongoClient(mongo_uri, tlsCAFile=certifi.where())
+    
+    db = client.get_database("discord_bot_db")
     templates_collection = db.get_collection("templates")
+    settings_collection = db.get_collection("server_settings") # Para configurações do servidor
+    
+    # Testa a conexão para garantir que está funcionando
+    client.admin.command('ping')
+    
     print("Conectado ao MongoDB com sucesso!")
 except Exception as e:
     print(f"ERRO CRÍTICO: Falha ao conectar ao MongoDB: {e}", file=sys.stderr)
@@ -56,7 +64,7 @@ def save_templates(templates_dict):
     templates_collection.update_one(
         {"_id": "global_templates"},
         {"$set": {"templates": templates_dict}},
-        upsert=True # Cria o documento se ele não existir
+        upsert=True
     )
 
 templates = load_templates()
@@ -188,7 +196,6 @@ class DynamicEventView(View):
             await interaction.message.edit(embed=new_embed, view=new_view)
             await select_interaction.response.defer()
 
-
         select.callback = select_callback
         view = View()
         view.add_item(select)
@@ -290,11 +297,13 @@ class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
         repair_per_person = total_repair // num_participants
         payout_per_person = loot_per_person - repair_per_person
 
-        report_channel_id = 1415693614989836358 # ATENÇÃO: Coloque o ID do seu canal de relatórios aqui
+        # Lembre-se de trocar este ID pelo ID do canal do seu novo servidor
+        report_channel_id = 1415693614989836358 
         report_channel = bot.get_channel(report_channel_id)
+
         if not report_channel:
-            logging.error(f"Canal de relatório com ID {report_channel_id} não encontrado.")
-            return await interaction.response.send_message(f"ERRO: Canal de relatório não encontrado.", ephemeral=True)
+            logging.error(f"Não foi possível encontrar o canal de relatório com ID {report_channel_id}.")
+            return await interaction.response.send_message(f"ERRO: Não encontrei o canal de relatório. Verifique o ID no código.", ephemeral=True)
         
         report_embed = discord.Embed(
             title=f"Relatório do Evento: {embed.title.replace('📢 Evento: ', '')}",
@@ -408,12 +417,10 @@ async def criar_template(interaction: discord.Interaction, nome: str, vagas: str
     if not vagas_list:
         return await interaction.response.send_message("A lista de vagas não pode estar vazia ou conter nomes em branco.", ephemeral=True)
     
-    # Carrega os templates mais recentes antes de modificar
     current_templates = load_templates()
     current_templates[nome] = vagas_list
     save_templates(current_templates)
     
-    # Atualiza a variável global para que o bot use a nova lista imediatamente
     global templates
     templates = current_templates
     
@@ -436,14 +443,12 @@ async def listar_templates(interaction: discord.Interaction):
 async def excluir_template(interaction: discord.Interaction, nome: str):
     nome = nome.strip().lower()
     
-    # Carrega os templates mais recentes antes de modificar
     current_templates = load_templates()
     
     if nome in current_templates:
         del current_templates[nome]
         save_templates(current_templates)
         
-        # Atualiza a variável global
         global templates
         templates = current_templates
         
