@@ -8,13 +8,6 @@ import logging
 import traceback
 import sys
 
-@bot.event
-async def on_error(event, *args, **kwargs):
-    print("="*40, file=sys.stderr)
-    print(f"ERRO NÃO TRATADO CAPTURADO NO EVENTO: {event}", file=sys.stderr)
-    traceback.print_exc(file=sys.stderr)
-    print("="*40, file=sys.stderr)
-
 # --- Configuração de Log ---
 logging.basicConfig(level=logging.INFO)
 
@@ -23,7 +16,18 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
+# BOT PRECISA SER DEFINIDO AQUI, ANTES DE SER USADO
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- O "CAÇADOR DE ERROS" AGORA ESTÁ NO LUGAR CERTO ---
+@bot.event
+async def on_error(event, *args, **kwargs):
+    """Captura todos os erros não tratados e os exibe no log."""
+    print("="*40, file=sys.stderr)
+    print(f"!!!!!!!! ERRO NÃO TRATADO CAPTURADO !!!!!!!!", file=sys.stderr)
+    print(f"EVENTO: {event}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    print("="*40, file=sys.stderr)
 
 # --- Caminho do Arquivo de Templates ---
 TEMPLATES_FILE = "templates.json"
