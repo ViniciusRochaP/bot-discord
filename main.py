@@ -7,7 +7,7 @@ import logging
 import traceback
 import sys
 import pymongo
-import certifi # <-- IMPORTAÇÃO PARA CORRIGIR O PROBLEMA DE CONEXÃO SSL
+import certifi
 
 # --- Configuração do Banco de Dados MongoDB ---
 try:
@@ -16,14 +16,11 @@ try:
         print("ERRO CRÍTICO: MONGO_URI não encontrada nas variáveis de ambiente.", file=sys.stderr)
         sys.exit(1)
         
-    # CORREÇÃO: Adiciona o tlsCAFile para resolver o erro de SSL handshake
     client = pymongo.MongoClient(mongo_uri, tlsCAFile=certifi.where())
     
     db = client.get_database("discord_bot_db")
     templates_collection = db.get_collection("templates")
-    settings_collection = db.get_collection("server_settings") # Para configurações do servidor
     
-    # Testa a conexão para garantir que está funcionando
     client.admin.command('ping')
     
     print("Conectado ao MongoDB com sucesso!")
@@ -41,26 +38,23 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- "Caçador de Erros" para registrar qualquer erro inesperado ---
+# --- "Caçador de Erros" ---
 @bot.event
 async def on_error(event, *args, **kwargs):
-    """Captura todos os erros não tratados e os exibe no log."""
     print("="*40, file=sys.stderr)
     print(f"!!!!!!!! ERRO NÃO TRATADO CAPTURADO !!!!!!!!", file=sys.stderr)
     print(f"EVENTO: {event}", file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
     print("="*40, file=sys.stderr)
 
-# --- Funções de Carregar/Salvar Templates com MongoDB ---
+# --- Funções de Templates com MongoDB ---
 def load_templates():
-    """Carrega os templates do banco de dados MongoDB."""
     data = templates_collection.find_one({"_id": "global_templates"})
     if data:
         return data.get("templates", {})
     return {}
 
 def save_templates(templates_dict):
-    """Salva os templates no banco de dados MongoDB."""
     templates_collection.update_one(
         {"_id": "global_templates"},
         {"$set": {"templates": templates_dict}},
@@ -141,7 +135,6 @@ class SignupButton(Button):
                 new_embed.set_field_at(target_field_index, name=clicked_role_name, value=user.mention, inline=False)
                 await interaction.message.edit(embed=new_embed)
                 await interaction.response.defer()
-
 
 class DynamicEventView(View):
     def __init__(self, author_id: int):
@@ -252,7 +245,6 @@ class ConcludeView(View):
         
         await interaction.response.edit_message(content="O evento foi marcado como cancelado.", view=None)
 
-
     @discord.ui.button(label="Não, foi concluído", style=discord.ButtonStyle.success)
     async def no_button(self, interaction: discord.Interaction, button: Button):
         modal = LootRepairModal(
@@ -327,7 +319,6 @@ class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
         await interaction.response.defer(ephemeral=True)
         
         await original_message.edit(content=f"~~{original_message.content}~~ `(Evento Concluído)`", embed=None, view=None)
-
 
 class PaymentView(View):
     def __init__(self, author_id: int, participant_ids: list[int]):
