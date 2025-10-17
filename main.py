@@ -5,6 +5,15 @@ import os
 import json
 from keep_alive import keep_alive
 import logging
+import traceback
+import sys
+
+@bot.event
+async def on_error(event, *args, **kwargs):
+    print("="*40, file=sys.stderr)
+    print(f"ERRO NÃO TRATADO CAPTURADO NO EVENTO: {event}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    print("="*40, file=sys.stderr)
 
 # --- Configuração de Log ---
 logging.basicConfig(level=logging.INFO)
