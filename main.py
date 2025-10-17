@@ -2,11 +2,26 @@ import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
 import os
-import json
 from keep_alive import keep_alive
 import logging
 import traceback
 import sys
+import pymongo
+
+# --- Configuração do Banco de Dados MongoDB ---
+try:
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        print("ERRO CRÍTICO: MONGO_URI não encontrada nas variáveis de ambiente.", file=sys.stderr)
+        sys.exit(1) # Impede o bot de iniciar se não houver conexão
+        
+    client = pymongo.MongoClient(mongo_uri)
+    db = client.get_database("discord_bot_db") # Pode ser qualquer nome
+    templates_collection = db.get_collection("templates")
+    print("Conectado ao MongoDB com sucesso!")
+except Exception as e:
+    print(f"ERRO CRÍTICO: Falha ao conectar ao MongoDB: {e}", file=sys.stderr)
+    sys.exit(1)
 
 # --- Configuração de Log ---
 logging.basicConfig(level=logging.INFO)
@@ -16,10 +31,9 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-# BOT PRECISA SER DEFINIDO AQUI, ANTES DE SER USADO
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- O "CAÇADOR DE ERROS" AGORA ESTÁ NO LUGAR CERTO ---
+# --- "Caçador de Erros" para registrar qualquer erro inesperado ---
 @bot.event
 async def on_error(event, *args, **kwargs):
     """Captura todos os erros não tratados e os exibe no log."""
@@ -29,29 +43,21 @@ async def on_error(event, *args, **kwargs):
     traceback.print_exc(file=sys.stderr)
     print("="*40, file=sys.stderr)
 
-# --- Caminho do Arquivo de Templates ---
-TEMPLATES_FILE = "templates.json"
-
-# --- Carregar/Salvar Templates ---
+# --- Funções de Carregar/Salvar Templates com MongoDB ---
 def load_templates():
-    if os.path.exists(TEMPLATES_FILE):
-        try:
-            with open(TEMPLATES_FILE, "r") as f:
-                content = f.read()
-                if not content:
-                    return {}
-                return json.loads(content)
-        except (json.JSONDecodeError, IOError) as e:
-            logging.error(f"Erro ao carregar templates.json: {e}")
-            return {}
+    """Carrega os templates do banco de dados MongoDB."""
+    data = templates_collection.find_one({"_id": "global_templates"})
+    if data:
+        return data.get("templates", {})
     return {}
 
-def save_templates(templates):
-    try:
-        with open(TEMPLATES_FILE, "w") as f:
-            json.dump(templates, f, indent=4)
-    except IOError as e:
-        logging.error(f"Erro ao salvar templates.json: {e}")
+def save_templates(templates_dict):
+    """Salva os templates no banco de dados MongoDB."""
+    templates_collection.update_one(
+        {"_id": "global_templates"},
+        {"$set": {"templates": templates_dict}},
+        upsert=True # Cria o documento se ele não existir
+    )
 
 templates = load_templates()
 
@@ -107,7 +113,7 @@ class SignupButton(Button):
                 return await interaction.response.send_message("Você já está inscrito nesta vaga.", ephemeral=True)
             
             new_role_field = next((f for f in original_embed.fields if f.name == clicked_role_name), None)
-            if "Vazio" not in new_role_field.value:
+            if new_role_field and "Vazio" not in new_role_field.value:
                 return await interaction.response.send_message(f"A vaga de **{clicked_role_name}** já foi preenchida.", ephemeral=True)
 
             view = ConfirmationView(user, current_role_field.name, clicked_role_name, original_embed.copy(), interaction.message)
@@ -236,29 +242,37 @@ class ConcludeView(View):
                 await original_message.edit(content=f"~~{original_message.content}~~ `(Evento Cancelado)`", embed=None, view=None)
         except discord.NotFound:
             logging.warning(f"Não foi possível encontrar a mensagem original do evento ({self.message_id}) para cancelar.")
-        await interaction.response.edit_message(content=None, view=None)
+        
+        await interaction.response.edit_message(content="O evento foi marcado como cancelado.", view=None)
 
 
     @discord.ui.button(label="Não, foi concluído", style=discord.ButtonStyle.success)
     async def no_button(self, interaction: discord.Interaction, button: Button):
-        modal = LootRepairModal(author_id=self.author_id, message_id=self.message_id)
+        modal = LootRepairModal(
+            author_id=self.author_id, 
+            message_id=self.message_id, 
+            original_interaction=interaction
+        )
         await interaction.response.send_modal(modal)
 
 class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
-    def __init__(self, author_id: int, message_id: int):
+    def __init__(self, author_id: int, message_id: int, original_interaction: discord.Interaction):
         super().__init__()
         self.author_id = author_id
         self.message_id = message_id
+        self.original_interaction = original_interaction
 
     loot_input = TextInput(label="Loot Total", placeholder="Apenas números (ex: 1000000)", required=True)
     repair_input = TextInput(label="Reparo Total", placeholder="Apenas números (ex: 200000)", required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
+        await self.original_interaction.edit_original_response(content="Processando relatório do evento...", view=None)
+        
         try:
             total_loot = int(self.loot_input.value)
             total_repair = int(self.repair_input.value)
         except ValueError:
-            return await interaction.response.send_message("Por favor, insira apenas números para o loot e reparo.", ephemeral=True)
+            return await interaction.response.send_message("Erro: Por favor, insira apenas números para o loot e reparo.", ephemeral=True)
 
         try:
             original_message = await interaction.channel.fetch_message(self.message_id)
@@ -276,7 +290,7 @@ class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
         repair_per_person = total_repair // num_participants
         payout_per_person = loot_per_person - repair_per_person
 
-        report_channel_id = 1415693614989836358
+        report_channel_id = 1415693614989836358 # ATENÇÃO: Coloque o ID do seu canal de relatórios aqui
         report_channel = bot.get_channel(report_channel_id)
         if not report_channel:
             logging.error(f"Canal de relatório com ID {report_channel_id} não encontrado.")
@@ -300,7 +314,9 @@ class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
         view.update_embed_fields(report_embed, interaction)
 
         await report_channel.send(embed=report_embed, view=view)
+        
         await interaction.response.defer(ephemeral=True)
+        
         await original_message.edit(content=f"~~{original_message.content}~~ `(Evento Concluído)`", embed=None, view=None)
 
 
@@ -391,9 +407,16 @@ async def criar_template(interaction: discord.Interaction, nome: str, vagas: str
     vagas_list = [v.strip() for v in vagas.split(',') if v.strip()]
     if not vagas_list:
         return await interaction.response.send_message("A lista de vagas não pode estar vazia ou conter nomes em branco.", ephemeral=True)
-        
-    templates[nome] = vagas_list
-    save_templates(templates)
+    
+    # Carrega os templates mais recentes antes de modificar
+    current_templates = load_templates()
+    current_templates[nome] = vagas_list
+    save_templates(current_templates)
+    
+    # Atualiza a variável global para que o bot use a nova lista imediatamente
+    global templates
+    templates = current_templates
+    
     await interaction.response.send_message(f"Template '{nome}' criado com sucesso.", ephemeral=True)
 
 
@@ -412,9 +435,18 @@ async def listar_templates(interaction: discord.Interaction):
 @bot.tree.command(name="excluir_template", description="Exclui um template salvo.")
 async def excluir_template(interaction: discord.Interaction, nome: str):
     nome = nome.strip().lower()
-    if nome in templates:
-        del templates[nome]
-        save_templates(templates)
+    
+    # Carrega os templates mais recentes antes de modificar
+    current_templates = load_templates()
+    
+    if nome in current_templates:
+        del current_templates[nome]
+        save_templates(current_templates)
+        
+        # Atualiza a variável global
+        global templates
+        templates = current_templates
+        
         await interaction.response.send_message(f"Template '{nome}' excluído com sucesso.", ephemeral=True)
     else:
         await interaction.response.send_message(f"Template '{nome}' não encontrado.", ephemeral=True)
