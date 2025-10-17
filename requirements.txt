@@ -4,3 +4,4 @@ gunicorn
 waitress
 PyNaCl
 pymongo[srv]
+certifi
