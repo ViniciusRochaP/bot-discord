@@ -8,6 +8,7 @@ import traceback
 import sys
 import pymongo
 import certifi
+import re # Usado para limpar os emojis
 
 # --- Configuração do Banco de Dados MongoDB ---
 try:
@@ -46,6 +47,11 @@ async def on_error(event, *args, **kwargs):
     print(f"EVENTO: {event}", file=sys.stderr)
     traceback.print_exc(file=sys.stderr)
     print("="*40, file=sys.stderr)
+
+# --- Função para Limpar Emojis (Apenas para exibição) ---
+def clean_emoji_from_string(text):
+    """Remove códigos de emoji customizados do Discord de uma string."""
+    return re.sub(r'<a?:.+?:\d+>', '', text).strip()
 
 # --- Funções de Templates com MongoDB ---
 def load_templates():
@@ -100,13 +106,17 @@ class ConfirmationView(View):
         await interaction.response.edit_message(content="Troca cancelada.", view=None)
 
 class SignupButton(Button):
-    def __init__(self, label: str, row: int):
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=f"signup_{label}", row=row)
+    # CORREÇÃO: O botão agora armazena o nome completo e o nome de exibição separadamente.
+    def __init__(self, full_role_name: str, row: int):
+        display_label = clean_emoji_from_string(full_role_name)
+        super().__init__(label=display_label, style=discord.ButtonStyle.secondary, custom_id=f"signup_{full_role_name}", row=row)
+        self.full_role_name = full_role_name
 
     async def callback(self, interaction: discord.Interaction):
         original_embed = interaction.message.embeds[0]
         user = interaction.user
-        clicked_role_name = self.label
+        # Usa o nome completo com emoji para encontrar o campo correto no embed.
+        clicked_role_name = self.full_role_name
 
         current_role_field = next((field for field in original_embed.fields if user.mention in field.value), None)
 
@@ -153,7 +163,8 @@ class DynamicEventView(View):
             if row > 4:
                 logging.warning("Máximo de 5 linhas de botões atingido.")
                 break
-            self.add_item(SignupButton(label=role, row=row))
+            # CORREÇÃO: Passa o nome completo (com emoji) para o botão.
+            self.add_item(SignupButton(full_role_name=role, row=row))
 
     @discord.ui.button(label="➕ Adicionar Vaga", style=discord.ButtonStyle.success, custom_id="add_role", row=0)
     async def add_role_button(self, interaction: discord.Interaction, button: Button):
@@ -289,7 +300,6 @@ class LootRepairModal(Modal, title="Detalhes do Evento Concluído"):
         repair_per_person = total_repair // num_participants
         payout_per_person = loot_per_person - repair_per_person
 
-        # Lembre-se de trocar este ID pelo ID do canal do seu novo servidor
         report_channel_id = 1415693614989836358 
         report_channel = bot.get_channel(report_channel_id)
 
@@ -382,8 +392,10 @@ async def criar_evento(
     
     roles_to_add = []
     if template and template.lower() in templates:
+        # Usa o nome completo (com emoji) do banco de dados
         roles_to_add = templates[template.lower()]
     elif vagas:
+        # Usa o nome completo (com emoji) digitado pelo usuário
         roles_to_add = [v.strip() for v in vagas.split(',')]
 
     for role in roles_to_add:
@@ -404,6 +416,7 @@ async def criar_evento(
 @bot.tree.command(name="criar_template", description="Cria um novo template de vagas.")
 async def criar_template(interaction: discord.Interaction, nome: str, vagas: str):
     nome = nome.strip().lower()
+    # CORREÇÃO: Salva o nome COMPLETO da vaga (com emoji) no banco de dados.
     vagas_list = [v.strip() for v in vagas.split(',') if v.strip()]
     if not vagas_list:
         return await interaction.response.send_message("A lista de vagas não pode estar vazia ou conter nomes em branco.", ephemeral=True)
